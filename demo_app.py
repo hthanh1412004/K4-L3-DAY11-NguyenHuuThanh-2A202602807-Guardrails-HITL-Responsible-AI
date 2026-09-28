@@ -30,13 +30,19 @@ if str(SRC) not in sys.path:
 
 from google.genai import types  # noqa: E402
 
-from agents.agent import create_blue_agent  # noqa: E402
+from agents.agent import create_blue_agent, create_red_agent_default  # noqa: E402
+from agents.guards_agent import create_red_agent_advance  # noqa: E402
 from assignment.audit_log import AuditLogPlugin  # noqa: E402
 from assignment.monitoring import MonitoringAlert  # noqa: E402
 from assignment.pipeline import is_egress_allowed  # noqa: E402
 from assignment.rate_limiter import RateLimitPlugin  # noqa: E402
-from core.config import blue_provider_label, get_openrouter_api_key  # noqa: E402
+from core.config import (  # noqa: E402
+    blue_provider_label,
+    get_openrouter_api_key,
+    red_provider_label,
+)
 from core.utils import chat_with_agent  # noqa: E402
+from attacks.attacks import classify_attack_outcome  # noqa: E402
 from guardrails.input_guardrails import detect_injection, topic_filter  # noqa: E402
 from guardrails.output_guardrails import content_filter  # noqa: E402
 
@@ -90,6 +96,20 @@ class DemoEngine:
             self.monitor.check_metrics()
             return {
                 "model": blue_provider_label(),
+                "agents": {
+                    "blue": {
+                        "label": "Blue · Guarded",
+                        "provider": blue_provider_label(),
+                    },
+                    "red_default": {
+                        "label": "Red · Unguarded",
+                        "provider": red_provider_label("default"),
+                    },
+                    "red_advance": {
+                        "label": "Red Advance · Strong guards",
+                        "provider": red_provider_label("advance"),
+                    },
+                },
                 "openrouter_configured": bool(get_openrouter_api_key()),
                 "rate_limit": {
                     "max_requests": self.max_requests,
@@ -99,11 +119,18 @@ class DemoEngine:
                 "audit": list(reversed(self.audit.logs[-12:])),
             }
 
-    def evaluate(self, prompt: str, user_id: str, live: bool) -> dict:
+    def evaluate(
+        self,
+        prompt: str,
+        user_id: str,
+        live: bool,
+        target: str = "blue",
+    ) -> dict:
         started = time.perf_counter()
         request_id = f"demo-{uuid4().hex[:10]}"
         prompt = str(prompt or "")
         user_id = str(user_id or "demo-user").strip() or "demo-user"
+        target = target if target in {"blue", "red_default", "red_advance"} else "blue"
         trace: list[dict] = []
 
         with self._lock:
@@ -113,6 +140,17 @@ class DemoEngine:
                 request_id=request_id,
             )
             self.monitor.total_requests += 1
+
+            if target != "blue":
+                return self._evaluate_red(
+                    prompt=prompt,
+                    user_id=user_id,
+                    request_id=audit_id,
+                    target=target,
+                    live=live,
+                    trace=trace,
+                    started=started,
+                )
 
             message = types.Content(
                 role="user",
@@ -133,7 +171,8 @@ class DemoEngine:
                 self.monitor.blocked_requests += 1
                 self.monitor.rate_limit_hits += 1
                 return self._finish(
-                    audit_id, user_id, response, True, "rate_limiter", trace, started, live
+                    audit_id, user_id, response, True, "rate_limiter", trace,
+                    started, live, target="blue"
                 )
 
             trace.append({
@@ -166,7 +205,8 @@ class DemoEngine:
                 ])
                 self.monitor.blocked_requests += 1
                 return self._finish(
-                    audit_id, user_id, response, True, layer, trace, started, live
+                    audit_id, user_id, response, True, layer, trace,
+                    started, live, target="blue"
                 )
 
             trace.append({
@@ -210,8 +250,101 @@ class DemoEngine:
 
             return self._finish(
                 audit_id, user_id, response, blocked, layer, trace, started, live,
-                issues=filtered["issues"],
+                issues=filtered["issues"], target="blue",
             )
+
+    def _evaluate_red(
+        self,
+        *,
+        prompt: str,
+        user_id: str,
+        request_id: str,
+        target: str,
+        live: bool,
+        trace: list[dict],
+        started: float,
+    ) -> dict:
+        """Run a prompt against Red or Red Advance with their actual lab policy."""
+        is_advance = target == "red_advance"
+        label = "Red Advance" if is_advance else "Red"
+        trace.append({
+            "name": "Target",
+            "status": "passed",
+            "detail": (
+                "Strong input/output guardrails enabled"
+                if is_advance else "Deliberately unguarded lab target"
+            ),
+        })
+
+        if live:
+            if is_advance:
+                agent, runner = create_red_agent_advance()
+            else:
+                agent, runner = create_red_agent_default()
+            response, _ = asyncio.run(chat_with_agent(agent, runner, prompt))
+            provider_detail = red_provider_label("advance" if is_advance else "default")
+        else:
+            response = (
+                f"[LOCAL DEMO] {label} simulation only. "
+                "Enable Live API to run the actual red-team target."
+            )
+            provider_detail = "Local simulation · no API call"
+
+        trace.append({
+            "name": f"{label} LLM",
+            "status": "passed",
+            "detail": provider_detail,
+        })
+
+        if live:
+            outcome = classify_attack_outcome(prompt, response, target_name=target)
+        else:
+            outcome = {
+                "leaked": False,
+                "blocked": False,
+                "layer": None,
+                "blocked_at": "Local simulation",
+            }
+
+        if outcome["leaked"]:
+            trace.append({
+                "name": "Leak detector",
+                "status": "leaked",
+                "detail": "Protected demo value found in response",
+            })
+            decision = "LEAKED"
+        elif outcome["blocked"]:
+            trace.append({
+                "name": "Guardrail outcome",
+                "status": "blocked",
+                "detail": outcome["blocked_at"],
+            })
+            decision = "BLOCKED"
+        else:
+            trace.append({
+                "name": "Leak detector",
+                "status": "passed",
+                "detail": outcome["blocked_at"],
+            })
+            decision = "PASSED"
+
+        blocked = bool(outcome["blocked"])
+        if blocked:
+            self.monitor.blocked_requests += 1
+        result = self._finish(
+            request_id,
+            user_id,
+            response,
+            blocked,
+            outcome["layer"],
+            trace,
+            started,
+            live,
+            target=target,
+            leaked=bool(outcome["leaked"]),
+        )
+        result["decision"] = decision
+        return result
 
     def _finish(
         self,
@@ -224,6 +357,8 @@ class DemoEngine:
         started: float,
         live: bool,
         issues: list[str] | None = None,
+        target: str = "blue",
+        leaked: bool = False,
     ) -> dict:
         entry = self.audit.record_output(
             user_id=user_id,
@@ -232,6 +367,7 @@ class DemoEngine:
             layer=layer,
             request_id=request_id,
         )
+        entry["target"] = target
         self.monitor.check_metrics()
         return {
             "request_id": request_id,
@@ -240,6 +376,8 @@ class DemoEngine:
             "layer": layer,
             "response": response,
             "issues": issues or [],
+            "target": target,
+            "leaked": leaked,
             "trace": trace,
             "live": live,
             "latency_ms": round((time.perf_counter() - started) * 1000, 1),
@@ -335,6 +473,7 @@ class DemoHandler(BaseHTTPRequestHandler):
                     body.get("prompt", ""),
                     body.get("user_id", "demo-user"),
                     bool(body.get("live", False)),
+                    body.get("target", "blue"),
                 )
             elif self.path == "/api/output-filter":
                 result = ENGINE.inspect_output(body.get("text", ""))
@@ -363,7 +502,8 @@ def main() -> None:
     server = ThreadingHTTPServer((args.host, args.port), DemoHandler)
     print("\nVinBank Guardrail Demo")
     print(f"Open: http://{args.host}:{args.port}")
-    print("Local mode uses no API. Press Ctrl+C to stop.\n")
+    print("Live API is enabled by default in the UI; switch it off for local mode.")
+    print("Press Ctrl+C to stop.\n")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

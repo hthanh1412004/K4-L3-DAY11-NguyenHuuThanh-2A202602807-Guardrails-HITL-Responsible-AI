@@ -42,6 +42,10 @@ Mở `http://127.0.0.1:8080`. Giao diện mặc định bật **Live OpenRouter*
 prompt banking hợp lệ sẽ gọi Blue model thật, còn prompt bị input guardrail chặn
 sẽ dừng trước LLM và không phát sinh API request. Tắt công tắc để demo offline.
 
+Demo cho phép chọn cả ba target của bài: **Blue** (OpenRouter + guardrails sinh
+viên), **Red** (provider trong `.env`, cố ý yếu) và **Red Advance** (cùng provider,
+guardrails mạnh). Dùng cùng một prompt để so sánh `BLOCKED`, `PASSED` và `LEAKED`.
+
 ### Ba agent (đặt tên thống nhất)
 
 | Tên gọi | Code / file | Bạn làm gì? | Checkpoint |

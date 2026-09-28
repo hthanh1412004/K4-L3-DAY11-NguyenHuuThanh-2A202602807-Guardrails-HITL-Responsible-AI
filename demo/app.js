@@ -34,21 +34,44 @@ function renderMetrics(state) {
 }
 
 function renderState(state) {
-  $("#modelLabel").textContent = state.model;
+  window.agentState = state.agents || {};
+  updateActiveModel();
+  refreshLiveNote();
   $("#quotaLabel").textContent = `${state.rate_limit.max_requests} req / ${state.rate_limit.window_seconds}s`;
   renderMetrics(state.metrics);
   const rows = state.audit || [];
   $("#auditRows").innerHTML = rows.length ? rows.map((row) => `
     <tr>
       <td>${escapeHtml(row.request_id)}</td>
+      <td>${escapeHtml((window.agentState[row.target] || {}).label || row.target || "Blue")}</td>
       <td>${escapeHtml(row.user_id)}</td>
       <td><span class="decision ${row.blocked ? "blocked" : "allowed"}">${row.blocked ? "BLOCKED" : "ALLOWED"}</span></td>
       <td>${escapeHtml(row.layer || "—")}</td>
       <td>${Number(row.latency_ms || 0).toFixed(1)} ms</td>
-    </tr>`).join("") : `<tr><td class="table-empty" colspan="5">No requests in this session.</td></tr>`;
+    </tr>`).join("") : `<tr><td class="table-empty" colspan="6">No requests in this session.</td></tr>`;
   $("#alerts").innerHTML = (state.metrics.alerts || []).map((alert) => `
     <div class="alert">⚠ ${escapeHtml(alert.message)} <strong>${Number(alert.value).toFixed(2)}</strong></div>
   `).join("");
+}
+
+function selectedTarget() {
+  return $('input[name="target"]:checked')?.value || "blue";
+}
+
+function updateActiveModel() {
+  const target = selectedTarget();
+  const agent = (window.agentState || {})[target];
+  $("#modelLabel").textContent = agent
+    ? `${agent.label} · ${agent.provider}`
+    : "Loading…";
+}
+
+function refreshLiveNote() {
+  const enabled = $('#liveToggle').checked;
+  const agent = (window.agentState || {})[selectedTarget()];
+  $('.live-note').innerHTML = enabled
+    ? `<span class="pulse"></span> Live mode: request sẽ gọi API thật của ${escapeHtml(agent?.label || 'agent đang chọn')} (${escapeHtml(agent?.provider || 'provider từ .env')}).`
+    : '<span class="status-dot safe"></span> Local mode: mô phỏng pipeline, không phát sinh API request.';
 }
 
 async function refreshState() {
@@ -65,7 +88,7 @@ function renderPipeline(result) {
   $("#pipelineResult").className = "result-wrap";
   $("#pipelineResult").innerHTML = `
     <div class="decision-head">
-      <span class="decision ${result.blocked ? "blocked" : "allowed"}">${escapeHtml(result.decision)}</span>
+      <span class="decision ${result.blocked || result.leaked ? "blocked" : "allowed"}">${escapeHtml(result.decision)}</span>
       <span class="latency">${result.live ? "LIVE API" : "LOCAL"} · ${result.latency_ms} ms · ${escapeHtml(result.request_id)}</span>
     </div>
     <div class="trace">${trace}</div>
@@ -85,6 +108,15 @@ $$('.chip[data-prompt]').forEach((button) => button.addEventListener('click', ()
   $('#promptInput').value = button.dataset.prompt;
 }));
 
+$$('input[name="target"]').forEach((input) => input.addEventListener('change', () => {
+  const active = $('input[name="target"]:checked');
+  $$('.agent-card').forEach((card) => {
+    card.classList.toggle('selected', card.contains(active));
+  });
+  updateActiveModel();
+  refreshLiveNote();
+}));
+
 $$('.egress-preset').forEach((button) => button.addEventListener('click', () => {
   $('#egressUrl').value = button.dataset.url;
   $('#egressPayload').value = button.dataset.payload;
@@ -98,6 +130,7 @@ $('#sendPrompt').addEventListener('click', async () => {
       prompt: $('#promptInput').value,
       user_id: $('#userId').value,
       live: $('#liveToggle').checked,
+      target: selectedTarget(),
     });
     renderPipeline(result);
   } catch (error) {
@@ -110,10 +143,7 @@ $('#sendPrompt').addEventListener('click', async () => {
 });
 
 $('#liveToggle').addEventListener('change', (event) => {
-  const note = $('.live-note');
-  note.innerHTML = event.target.checked
-    ? '<span class="pulse"></span> Live mode đang bật: prompt an toàn sẽ gọi OpenRouter thật; prompt bị chặn không gọi LLM.'
-    : '<span class="status-dot safe"></span> Local mode đang bật: mô phỏng pipeline, không phát sinh API request.';
+  refreshLiveNote();
 });
 
 $('#inspectOutput').addEventListener('click', async () => {
