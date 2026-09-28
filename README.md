@@ -1,5 +1,8 @@
 # Day 11 — Controlled Agent Security (2026)
 
+- **Học viên:** Nguyễn Hữu Thành
+- **MSSV:** 2A202602807
+
 > 👤 **Hình thức:** bài tập **cá nhân** (1 người / 1 MSSV).  
 > 🎯 **Mục tiêu:** xây **Blue** (phòng thủ), rồi red-team **Red** + **Red Advance**.  
 > ✅ Làm theo **Checkpoint 1 → 5** trong [`CHECKPOINTS.md`](CHECKPOINTS.md) · nộp theo [`SUBMISSION.md`](SUBMISSION.md).
@@ -26,6 +29,18 @@
    - **Blue (bắt buộc):** [OpenRouter](https://openrouter.ai/keys) — model cố định [`liquid/lfm-2.5-2.6b`](https://openrouter.ai/liquid/lfm-2.5-2.6b)
    - **Red (chọn một provider):** [OpenAI](https://platform.openai.com/api-keys) (`gpt-4o-mini`) **hoặc** [Google AI Studio](https://aistudio.google.com/apikey) (`gemini-3.5-flash`)
 4. Đọc nhanh [`RULES.md`](RULES.md) và [`RUBRIC.md`](RUBRIC.md).
+
+### Demo giao diện guardrails
+
+Chạy web demo cục bộ (không cần cài thêm package):
+
+```powershell
+python demo_app.py
+```
+
+Mở `http://127.0.0.1:8080`. Giao diện mặc định bật **Live OpenRouter**:
+prompt banking hợp lệ sẽ gọi Blue model thật, còn prompt bị input guardrail chặn
+sẽ dừng trước LLM và không phát sinh API request. Tắt công tắc để demo offline.
 
 ### Ba agent (đặt tên thống nhất)
 
